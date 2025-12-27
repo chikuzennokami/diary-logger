@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#2563eb">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Daily Life Logger</title>
+    
+    <!-- PWA Manifest (Inline JSON data URI) -->
+    <link rel="manifest" href='data:application/json,{"name":"デイリーロガー","short_name":"ロガー","start_url":".","display":"standalone","background_color":"#ffffff","theme_color":"#2563eb","icons":[{"src":"https://cdn-icons-png.flaticon.com/512/3209/3209265.png","sizes":"512x512","type":"image/png"}]}'>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+        body { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
+        .tab-active { border-bottom: 2px solid #3b82f6; color: #3b82f6; }
+        input[type="time"], input[type="number"], input[type="text"], select { 
+            font-size: 16px !important; /* Prevents auto-zoom on iOS/Android focus */
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div id="app" class="max-w-md mx-auto bg-white min-h-screen shadow-lg flex flex-col">
+        
+        <!-- Header -->
+        <header class="bg-blue-600 text-white p-4 sticky top-0 z-10 shadow-md">
+            <h1 class="text-xl font-bold flex items-center justify-between">
+                <span>Daily Life Logger</span>
+                <button id="notification-req" class="text-xs bg-blue-500 px-3 py-1 rounded-full hover:bg-blue-400 transition">
+                    通知許可
+                </button>
+            </h1>
+        </header>
+
+        <!-- Tabs -->
+        <nav class="flex bg-white border-b sticky top-0 z-10">
+            <button onclick="switchTab('input')" id="tab-input" class="flex-1 py-3 text-center font-medium tab-active">記録</button>
+            <button onclick="switchTab('history')" id="tab-history" class="flex-1 py-3 text-center font-medium text-gray-500">履歴</button>
+            <button onclick="switchTab('settings')" id="tab-settings" class="flex-1 py-3 text-center font-medium text-gray-500">設定</button>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="flex-1 p-4 overflow-y-auto pb-24">
+            <!-- View Input -->
+            <div id="view-input" class="space-y-6">
+                <div class="bg-blue-50 p-4 rounded-xl border border-blue-100">
+                    <p class="text-blue-800 text-sm font-semibold" id="time-greeting">読み込み中...</p>
+                    <p class="text-xs text-blue-600 mt-1" id="current-date"></p>
+                </div>
+                <div id="questionnaire-container" class="space-y-4"></div>
+                <div class="pt-4">
+                    <button onclick="saveTodayData()" class="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold text-lg shadow-lg active:bg-blue-700 transition">
+                        本日の記録を保存
+                    </button>
+                </div>
+            </div>
+
+            <!-- View History -->
+            <div id="view-history" class="hidden space-y-4">
+                <div class="flex justify-between items-center">
+                    <h2 class="font-bold text-gray-700">過去の記録</h2>
+                    <button onclick="exportCSV()" class="text-sm text-blue-600 font-semibold px-2 py-1">CSV書き出し</button>
+                </div>
+                <div id="history-list" class="space-y-3"></div>
+            </div>
+
+            <!-- View Settings -->
+            <div id="view-settings" class="hidden space-y-6">
+                <section>
+                    <h2 class="font-bold text-gray-800 mb-3 border-l-4 border-blue-500 pl-2">通知設定</h2>
+                    <div class="bg-gray-50 p-4 rounded-xl space-y-4 border">
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm">朝の時刻</span>
+                            <input type="time" id="setting-morning-time" onchange="saveSettings()">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm">晩の時刻</span>
+                            <input type="time" id="setting-evening-time" onchange="saveSettings()">
+                        </div>
+                        <div id="days-container" class="flex flex-wrap gap-2 pt-2"></div>
+                    </div>
+                </section>
+                <section>
+                    <div class="flex justify-between items-center mb-3">
+                        <h2 class="font-bold text-gray-800 border-l-4 border-blue-500 pl-2">質問のカスタマイズ</h2>
+                        <button onclick="addNewQuestionPrompt()" class="bg-blue-100 text-blue-600 px-3 py-1 rounded-full text-xs font-bold">+ 追加</button>
+                    </div>
+                    <div id="settings-questions-list" class="space-y-2"></div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast UI -->
+    <div id="toast" class="fixed bottom-10 left-1/2 -translate-x-1/2 bg-gray-900/90 text-white px-6 py-3 rounded-full text-sm opacity-0 transition-all pointer-events-none z-50">
+        保存完了
+    </div>
+
+    <script>
+        // Service Worker registration for PWA installation
+        if ('serviceWorker' in navigator) {
+            const swCode = `self.addEventListener('fetch', function(e) { e.respondWith(fetch(e.request)); });`;
+            const blob = new Blob([swCode], {type: 'application/javascript'});
+            const swUrl = URL.createObjectURL(blob);
+            navigator.serviceWorker.register(swUrl);
+        }
+
+        const DEFAULT_QUESTIONS = [
+            { id: 1, text: "今朝何時に起きましたか？", type: "time" },
+            { id: 2, text: "今日は何歩歩きましたか？", type: "number", suffix: "歩" },
+            { id: 3, text: "今日はいくらの買い物をしましたか？", type: "number", suffix: "円" },
+            { id: 4, text: "今日はどのくらいお酒を飲みましたか？", type: "text" },
+            { id: 5, text: "今日の健康状態(1-4)は？", type: "select", options: ["1 (不調)", "2 (普通)", "3 (良好)", "4 (最高)"] },
+            { id: 6, text: "今晩は何時に寝ますか？", type: "time" }
+        ];
+
+        let state = {
+            questions: JSON.parse(localStorage.getItem('questions')) || DEFAULT_QUESTIONS,
+            settings: JSON.parse(localStorage.getItem('settings')) || {
+                morningTime: "08:00",
+                eveningTime: "21:00",
+                days: [0, 1, 2, 3, 4, 5, 6]
+            },
+            records: JSON.parse(localStorage.getItem('records')) || {}
+        };
+
+        const DAYS_NAME = ["日", "月", "火", "水", "木", "金", "土"];
+
+        function init() {
+            renderQuestions();
+            updateHeaderInfo();
+            renderSettings();
+            setupNotifications();
+            setInterval(checkNotificationTime, 60000);
+        }
+
+        function switchTab(tabId) {
+            document.querySelectorAll('nav button').forEach(btn => {
+                btn.classList.remove('tab-active', 'text-blue-600');
+                btn.classList.add('text-gray-500');
+            });
+            document.getElementById('tab-' + tabId).classList.add('tab-active');
+            document.getElementById('tab-' + tabId).classList.remove('text-gray-500');
+
+            ['view-input', 'view-history', 'view-settings'].forEach(id => {
+                document.getElementById(id).classList.toggle('hidden', id !== 'view-' + tabId);
+            });
+
+            if (tabId === 'history') renderHistory();
+            if (tabId === 'input') renderQuestions();
+        }
+
+        function updateHeaderInfo() {
+            const now = new Date();
+            const hour = now.getHours();
+            document.getElementById('current-date').innerText = now.toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', weekday: 'short' });
+            let greeting = hour < 11 ? "おはようございます！" : (hour > 17 ? "お疲れ様でした！" : "こんにちは！");
+            document.getElementById('time-greeting').innerText = greeting;
+        }
+
+        function renderQuestions() {
+            const container = document.getElementById('questionnaire-container');
+            const today = new Date().toISOString().split('T')[0];
+            const currentData = state.records[today] || {};
+            container.innerHTML = '';
+            
+            state.questions.forEach(q => {
+                const div = document.createElement('div');
+                div.className = "bg-white p-4 border rounded-xl shadow-sm";
+                const val = currentData[q.id] || '';
+                let input = q.type === 'select' ? 
+                    `<select class="w-full p-3 bg-gray-50 border rounded-lg" data-id="${q.id}">
+                        <option value="">回答なし</option>
+                        ${q.options.map(opt => `<option value="${opt}" ${val === opt ? 'selected' : ''}>${opt}</option>`).join('')}
+                    </select>` :
+                    `<input type="${q.type}" class="w-full p-3 bg-gray-50 border rounded-lg" data-id="${q.id}" value="${val}" placeholder="回答を入力">`;
+                
+                div.innerHTML = `<label class="block text-sm font-bold text-gray-600 mb-2">${q.text}</label>${input}`;
+                container.appendChild(div);
+            });
+        }
+
+        function saveTodayData() {
+            const today = new Date().toISOString().split('T')[0];
+            const data = {};
+            document.querySelectorAll('#questionnaire-container [data-id]').forEach(input => {
+                if (input.value) data[input.getAttribute('data-id')] = input.value;
+            });
+            state.records[today] = data;
+            saveState();
+            showToast("保存しました");
+        }
+
+        function renderHistory() {
+            const list = document.getElementById('history-list');
+            list.innerHTML = '';
+            const dates = Object.keys(state.records).sort().reverse();
+            if (!dates.length) {
+                list.innerHTML = '<div class="text-center text-gray-400 py-10">履歴はありません</div>';
+                return;
+            }
+            dates.forEach(date => {
+                const card = document.createElement('div');
+                card.className = "bg-white p-4 rounded-xl border";
+                let html = `<div class="font-bold text-blue-600 mb-2">${date}</div><div class="space-y-1">`;
+                state.questions.forEach(q => {
+                    if (state.records[date][q.id]) {
+                        html += `<div class="flex justify-between text-xs border-b border-gray-50 py-1">
+                                    <span class="text-gray-500">${q.text}</span>
+                                    <span class="font-medium">${state.records[date][q.id]}${q.suffix || ''}</span>
+                                 </div>`;
+                    }
+                });
+                card.innerHTML = html + '</div>';
+                list.appendChild(card);
+            });
+        }
+
+        function renderSettings() {
+            document.getElementById('setting-morning-time').value = state.settings.morningTime;
+            document.getElementById('setting-evening-time').value = state.settings.eveningTime;
+            const container = document.getElementById('days-container');
+            container.innerHTML = '';
+            DAYS_NAME.forEach((name, i) => {
+                const label = document.createElement('label');
+                const active = state.settings.days.includes(i) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-500 border-gray-200';
+                label.className = `flex-1 text-center py-2 border rounded-lg text-xs cursor-pointer transition ${active}`;
+                label.innerHTML = `<input type="checkbox" class="hidden" value="${i}" ${state.settings.days.includes(i) ? 'checked' : ''} onchange="toggleDay(this)">${name}`;
+                container.appendChild(label);
+            });
+            const qList = document.getElementById('settings-questions-list');
+            qList.innerHTML = '';
+            state.questions.forEach((q, i) => {
+                const item = document.createElement('div');
+                item.className = "flex items-center gap-2 bg-gray-50 p-3 rounded-lg border";
+                item.innerHTML = `
+                    <input type="text" class="flex-1 bg-transparent text-sm" value="${q.text}" onchange="updateQuestion(${i}, this.value)">
+                    <button onclick="removeQuestion(${i})" class="text-red-400 font-bold px-2">×</button>
+                `;
+                qList.appendChild(item);
+            });
+        }
+
+        function toggleDay(cb) {
+            const val = parseInt(cb.value);
+            if (cb.checked) state.settings.days.push(val);
+            else state.settings.days = state.settings.days.filter(d => d !== val);
+            saveSettings();
+            renderSettings();
+        }
+
+        function updateQuestion(i, val) { state.questions[i].text = val; saveState(); }
+        function removeQuestion(i) { if(confirm("削除しますか？")) { state.questions.splice(i, 1); saveState(); renderSettings(); } }
+        function addNewQuestionPrompt() {
+            const t = prompt("新しい質問:");
+            if (t) { state.questions.push({ id: Date.now(), text: t, type: "text" }); saveState(); renderSettings(); }
+        }
+
+        function saveSettings() {
+            state.settings.morningTime = document.getElementById('setting-morning-time').value;
+            state.settings.eveningTime = document.getElementById('setting-evening-time').value;
+            saveState();
+        }
+
+        function saveState() {
+            localStorage.setItem('questions', JSON.stringify(state.questions));
+            localStorage.setItem('settings', JSON.stringify(state.settings));
+            localStorage.setItem('records', JSON.stringify(state.records));
+        }
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.innerText = msg; t.style.opacity = '1';
+            setTimeout(() => t.style.opacity = '0', 2000);
+        }
+
+        function setupNotifications() {
+            document.getElementById('notification-req').onclick = () => {
+                Notification.requestPermission().then(p => { if(p==='granted') showToast("通知設定完了"); });
+            };
+        }
+
+        function checkNotificationTime() {
+            const now = new Date();
+            const time = now.getHours().toString().padStart(2,'0')+":"+now.getMinutes().toString().padStart(2,'0');
+            if (!state.settings.days.includes(now.getDay())) return;
+            if (time === state.settings.morningTime) triggerNotification("おはようございます", "朝の記録の時間です。");
+            if (time === state.settings.eveningTime) triggerNotification("こんばんは", "一日の振り返りをしましょう。");
+        }
+
+        function triggerNotification(t, b) {
+            if (Notification.permission === "granted") new Notification(t, { body: b });
+        }
+
+        function exportCSV() {
+            const rows = [["日付", ...state.questions.map(q => q.text)]];
+            Object.keys(state.records).sort().forEach(d => {
+                rows.push([d, ...state.questions.map(q => state.records[d][q.id] || "")]);
+            });
+            const csv = "data:text/csv;charset=utf-8," + rows.map(e => e.join(",")).join("\n");
+            const link = document.createElement("a");
+            link.href = encodeURI(csv);
+            link.download = "records.csv";
+            link.click();
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
